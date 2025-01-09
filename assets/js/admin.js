@@ -20,11 +20,7 @@ jQuery(function () {
     }
 
     function putTextToEditor(content) {
-        if (puock_admin_setting.compatible.githubermd) {
-            window.githuber_md_editor.insertValue(content)
-            return
-        }
-        send_to_editor(content)
+        wp.media.editor.insert(content)
     }
 
     mediaButtonEventHandle('#insert-smiley-button', '#insert-smiley-wrap');
@@ -39,6 +35,7 @@ jQuery(function () {
         const _this = $(this)
         const key = _this.attr("data-key")
         const attrStr = _this.attr("data-attr")
+        const content = _this.attr("data-content")
         let out = `[${key}`
         if (attrStr) {
             const attr = JSON.parse(attrStr)
@@ -46,8 +43,19 @@ jQuery(function () {
                 out += ` ${attrKey}='${attr[attrKey]}'`
             }
         }
-        out += `][/${key}]`
+        out += `]${content}[/${key}]`
         putTextToEditor(out)
         $('#insert-shortcode-wrap').removeClass('cur')
     });
 })
+
+window.puockSelectMedia = (params = {}, callback = null) => {
+    const wpMedia = wp.media(params)
+    wpMedia.on('select', function () {
+        const media = wpMedia.state().get('selection').first()
+        if (callback) {
+            callback(media)
+        }
+    })
+    wpMedia.open()
+}

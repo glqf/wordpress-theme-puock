@@ -1,6 +1,7 @@
 <?php
 
-function pk_comment_err($msg)
+use function donatj\UserAgent\parse_user_agent;
+function pk_comment_err($msg, $refresh_code = true)
 {
     $protocol = $_SERVER['SERVER_PROTOCOL'];
     if (!in_array($protocol, array('HTTP/1.1', 'HTTP/2', 'HTTP/2.0'))) {
@@ -10,9 +11,24 @@ function pk_comment_err($msg)
     header('Allow: POST');
     header("$protocol 405 Method Not Allowed");
     header('Content-Type: text/plain');
-    echo $msg;
+    echo json_encode([
+        'msg' => $msg,
+        'refresh_code' => $refresh_code,
+    ]);
     exit();
 }
+
+function pk_check_comment_for_chinese($comment) {
+    $pattern = '/[\x{4e00}-\x{9fa5}]/u';
+    if (!preg_match($pattern, $comment)) {
+        pk_comment_err('您的评论必须包含至少一个中文字符');
+    }
+    return $comment;
+}
+if(pk_is_checked('vd_comment_need_chinese')){
+    add_filter('pre_comment_content', 'pk_check_comment_for_chinese');
+}
+
 
 function pk_comment_ajax()
 {
@@ -21,28 +37,39 @@ function pk_comment_ajax()
     nocache_headers();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        pk_comment_err('无效的请求方式');
+        pk_comment_err('无效的请求方式', false);
     }
 
     if (pk_post_comment_is_closed()) {
-        pk_comment_err('评论功能已关闭');
+        pk_comment_err('评论功能已关闭', false);
     }
 
     //是否需要进行验证
     if (pk_is_checked('vd_comment')) {
+        if (pk_get_option('vd_type', 'img') === 'img') {
+            $token = $_REQUEST['comment-vd'];
 
-        $token = $_REQUEST['comment-vd'];
-
-        if (empty($token)) {
-            pk_comment_err('无效验证码');
+            if (empty($token)) {
+                pk_comment_err('无效验证码，已刷新请重新输入');
+            }
+            $validate_pass = true;
+            pk_session_call(function () use ($token, &$validate_pass) {
+                $session_comment_captcha = $_SESSION['comment_vd'];
+                if (!$session_comment_captcha || $session_comment_captcha == '' || trim($token) != $session_comment_captcha) {
+                    $validate_pass = false;
+                }
+                unset($_SESSION['comment_vd']);
+            });
+            if (!$validate_pass) {
+                pk_comment_err('验证码不正确', false);
+            }
+        } else {
+            try {
+                pk_vd_gt_validate();
+            } catch (Exception $e) {
+                pk_comment_err($e->getMessage());
+            }
         }
-        $session_comment_captcha = $_SESSION['comment_captcha'];
-        if (!$session_comment_captcha || $session_comment_captcha == '' || trim($token) != $session_comment_captcha) {
-            pk_comment_err('无效验证码');
-        }
-
-        unset($_SESSION['comment_captcha']);
-
     }
 
     $comment_post_ID = isset($_POST['comment_post_ID']) ? (int)$_POST['comment_post_ID'] : 0;
@@ -109,10 +136,15 @@ function pk_comment_ajax()
     if (empty($comment_content)) pk_comment_err('评论内容不能为空');
 
     // 检查重复评论功能
-    $dupe = "SELECT comment_ID FROM $wpdb->comments WHERE comment_post_ID = '$comment_post_ID' AND ( comment_author = '$comment_author' ";
-    if ($comment_author_email) $dupe .= "OR comment_author_email = '$comment_author_email' ";
-    $dupe .= ") AND comment_content = '$comment_content' LIMIT 1";
-    if ($wpdb->get_var($dupe)) {
+    $query_params = [$comment_post_ID, $comment_author];
+    $dupe = "SELECT comment_ID FROM $wpdb->comments WHERE comment_post_ID = %d AND ( comment_author = %s ";
+    if ($comment_author_email) {
+        $dupe .= "OR comment_author_email = %s ";
+        $query_params[] = $comment_author_email;
+    }
+    $dupe .= ") AND comment_content = %s LIMIT 1";
+    $query_params[] = $comment_content;
+    if ($wpdb->get_var($wpdb->prepare($dupe, $query_params))) {
         pk_comment_err('您已经发表过相同的评论了!');
     }
 
@@ -143,26 +175,45 @@ function pk_comment_ajax()
     $comment_approved_str = '';
 
     if ($comment->comment_approved == '0') {
-        $comment_approved_str = '<p class="c-sub mt-1"><i class="czs-warning-l mr-1"></i>您的评论正在等待审核！</p>';
+        $comment_approved_str = '<p class="c-sub mt-1"><i class="fa fa-warning mr-1"></i>您的评论正在等待审核！</p>';
     }
 
     wp_set_comment_cookies($comment, $user);
 
     echo '<div id="comment-' . get_comment_ID() . '" class="post-comment">
-            <div class="info clearfix">
-                <div class="float-left">' . get_avatar($comment, 64, '', '', array('class' => 'md-avatar')) . '</div>
-                <div class="float-left ml-3 two-info">
+            <div class="info">
+                <div>' . get_avatar($comment, 64, '', '', array('class' => 'md-avatar')) . '</div>
+                <div class="ml-3 two-info">
                     <div class="puock-text ta3b">
                         <span class="t-md puock-links">' . get_comment_author_link($comment_id) . '</span>
-                        ' . pk_the_author_class(false, $comment) . '
+                        ' . (pk_is_checked('comment_level') ? pk_the_author_class(false, $comment) : '') . '
                     </div>
                     <div class="t-sm c-sub">' . get_comment_date('Y-m-d H:i:s', $comment_id) . '</div>
                 </div>
             </div>
-            <div class="content t-sm mt10 puock-text">
-                <div class="content-text">
-                    ' . get_comment_text($comment_id) . '
+            <div class="content">
+                <div class="content-text t-md mt10 puock-text">
+                    <p>' . get_comment_text($comment_id) . '</p>
                     ' . $comment_approved_str . '
+                    <div class="comment-os c-sub">';
+                
+                if (pk_is_checked('comment_show_ua', true)):
+                    $commentUserAgent = parse_user_agent($comment->comment_agent);
+                    $commentOsIcon = pk_get_comment_ua_os_icon($commentUserAgent['platform']);
+                    $commentBrowserIcon = pk_get_comment_ua_os_icon($commentUserAgent['browser']);
+                    echo "<span class='mt10' title='{$commentUserAgent['platform']}'><i class='$commentOsIcon'></i>&nbsp;<span>{$commentUserAgent['platform']}&nbsp;</span></span>";
+                    echo "<span class='mt10' title='{$commentUserAgent['browser']} {$commentUserAgent['version']}'><i class='$commentBrowserIcon'></i>&nbsp;<span>{$commentUserAgent['browser']}</span></span>";
+                endif;
+                ?>
+                <?php
+                if (pk_is_checked('comment_show_ip', true)) {
+                    if (!pk_is_checked('comment_dont_show_owner_ip') || (pk_is_checked('comment_dont_show_owner_ip') && $comment->user_id != 1)) {
+                        $ip = pk_get_ip_region_str($comment->comment_author_IP);
+                        echo "<span class='mt10' title='IP'><i class='fa-solid fa-location-dot'></i>&nbsp;$ip</span>";
+                    }
+                }
+                
+    echo '          </div>
                 </div>
             </div>
         </div>';

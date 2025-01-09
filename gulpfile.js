@@ -9,9 +9,9 @@ const concatCss = require('gulp-concat-css');
 const minifyCSS = require('gulp-minify-css')
 
 const _core_script = "assets/js/*.js"
-const _libs_script = "assets/libs/**/*.js"
+const _libs_script = "assets/libs/basic/**/*.js"
 const _core_style = "assets/style/*.less"
-const _libs_style = "assets/libs/**/*.css"
+const _libs_style = "assets/libs/basic/**/*.css"
 const _dist = "assets/dist"
 
 gulp.task('style', function () {
@@ -21,18 +21,21 @@ gulp.task('style', function () {
             compress: true
         }))
         .pipe(rename({suffix: '.min'}))
-        .pipe(gulp.dest(_dist))
+        .pipe(gulp.dest(_dist + '/style'))
 })
 
 gulp.task('lib_style', function () {
     return gulp.src(_libs_style)
-        .pipe(concatCss("libs.min.css"))
+        .pipe(concatCss("libs.min.css",{
+            // inlineImports:false,
+            rebaseUrls:false
+        }))
         .pipe(minifyCSS({
             format: 'keep-breaks',
             semicolonAfterLastProperty: true,
             afterComment: true
         }))
-        .pipe(gulp.dest(_dist))
+        .pipe(gulp.dest(_dist + '/style'))
 })
 
 gulp.task('lib_script', function () {
@@ -43,7 +46,7 @@ gulp.task('lib_script', function () {
                 comments: true,
             }
         }))
-        .pipe(gulp.dest(_dist))
+        .pipe(gulp.dest(_dist + '/js'))
 })
 
 gulp.task('script', function () {
@@ -52,7 +55,7 @@ gulp.task('script', function () {
         .pipe(rename({suffix: '.min'}))
         .pipe(babel())
         .pipe(uglify())
-        .pipe(gulp.dest(_dist))
+        .pipe(gulp.dest(_dist + '/js'))
 })
 
 gulp.task('build', gulp.series(
